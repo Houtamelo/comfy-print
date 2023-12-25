@@ -1,0 +1,15 @@
+[package]
+name = "comfy_print_tests"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+comfy-print = { path = "../../comfy-print" }
+tokio = { version = "1.13.0", features = ["full"] }
+
+[features]
+default = []
+async_std = ["comfy-print/async_std"]
+async_tokio = ["comfy-print/async_tokio"]

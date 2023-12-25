@@ -1,0 +1,15 @@
+workspace = { members = ["comfy_print_tests"] }
+[package]
+name = "comfy-print"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.35.1", features = ["io-std", "io-util", "rt", "sync", "macros", "time", "net"], optional = true }
+
+[features]
+default = []
+async_tokio = ["dep:tokio"]
+async_std = []

@@ -1,9 +1,36 @@
 use std::fmt::{Display, Formatter};
-use std::io::Write;
+use std::ops::Deref;
 
 pub enum Message {
 	Standard(String),
 	Error(String),
+}
+
+impl Deref for Message {
+	type Target = str;
+
+	fn deref(&self) -> &Self::Target {
+		return match self {
+			Message::Standard(s) => s.as_str(),
+			Message::Error(e) => e.as_str(),
+		};
+	}
+}
+
+impl Message {
+	pub fn output_kind(&self) -> OutputKind {
+		return match self {
+			Message::Standard(_) => OutputKind::Stdout,
+			Message::Error(_) => OutputKind::Stderr,
+		};
+	}
+}
+
+
+#[derive(Debug, Copy, Clone)]
+pub enum OutputKind {
+	Stdout,
+	Stderr,
 }
 
 impl Display for Message {
@@ -13,17 +40,4 @@ impl Display for Message {
 			Message::Error(e) => write!(f, "{}", e),
 		}
 	}
-}
-
-pub(crate) fn print_stderr<T>(err: T) where T: std::error::Error {
-	let mut std_err = std::io::stderr();
-	let _ = std_err.write_all(format!("comfy_print internal error: {err}").as_bytes());
-	let _ = std_err.flush();
-}
-
-/// In case we fail to print to stderr, we'll try to print to stdout
-pub(crate) fn print_stdout<T>(err: T) where T: std::error::Error {
-	let mut std_out = std::io::stdout();
-	let _ = std_out.write_all(format!("comfy_print internal error: {err}").as_bytes());
-	let _ = std_out.flush();
 }

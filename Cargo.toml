@@ -7,9 +7,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.35.1", features = ["io-std", "io-util", "rt", "sync", "macros", "time", "net"], optional = true }
+parking_lot = "0.12.1"
 
 [features]
 default = []
-async_tokio = ["dep:tokio"]
-async_std = []
+async_impl = []

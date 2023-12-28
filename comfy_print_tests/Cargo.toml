@@ -7,9 +7,9 @@ edition = "2021"
 
 [dependencies]
 comfy-print = { path = "../../comfy-print" }
-tokio = { version = "1.13.0", features = ["full"] }
+rand = "0.8.5"
+libc = "0.2.151"
 
 [features]
 default = []
-async_std = ["comfy-print/async_std"]
-async_tokio = ["comfy-print/async_tokio"]
+async_impl = ["comfy-print/async_impl"]

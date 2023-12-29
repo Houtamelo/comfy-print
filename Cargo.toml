@@ -8,7 +8,10 @@ repository = "https://github.com/Houtamelo/comfy-print"
 readme = "README.md"
 keywords = ["println", "debug", "write", "io", "stream"]
 categories = ["os", "rust-patterns", "development-tools", "development-tools::debugging"]
-exclude = ["comfy_print_tests/*"]
+exclude = [
+    "comfy_print_tests/*",
+    ".idea/*"
+]
 
 [dependencies]
 parking_lot = "0.12.1"

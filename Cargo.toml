@@ -6,7 +6,6 @@ license = "MIT"
 description = "Non-panicking versions of println! and friends"
 repository = "https://github.com/Houtamelo/comfy-print"
 readme = "README.md"
-documentation = "README.md"
 keywords = ["println", "debug", "write", "io", "stream"]
 categories = ["os", "rust-patterns", "development-tools", "development-tools::debugging"]
 exclude = [

@@ -14,7 +14,7 @@ use libc;
 fn main() {
 	const COUNT: usize = 500;
 
-	unsafe { break_stdout();}
+	//unsafe { break_stdout();}
 
 	let mut rng = rand::thread_rng();
 	

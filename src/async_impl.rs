@@ -1,10 +1,8 @@
-use std::fmt::Display;
-use std::io::Write;
+use super::utils::Message;
+use super::utils;
 use std::thread;
 use std::thread::JoinHandle;
 use parking_lot::FairMutex;
-
-use super::utils::*;
 
 static QUEUE: FairMutex<Vec<Message>> = FairMutex::new(Vec::new());
 static ACTIVE_THREAD: FairMutex<Option<JoinHandle<()>>> = FairMutex::new(None);
@@ -14,7 +12,7 @@ pub fn _comfy_print_async(msg: Message) {
 	
 	if queue_guard.len() == 0 {
 		drop(queue_guard);
-		blocking_write_first_in_line(msg);
+		write_first_in_line(msg);
 	} else {
 		queue_guard.push(msg);
 		drop(queue_guard);
@@ -32,28 +30,25 @@ fn check_thread() {
 	}
 
 	match thread::Builder::new().spawn(print_until_empty) {
-		Ok(ok) => {
-			*thread_guard = Some(ok);
+		Ok(handle) => {
+			*thread_guard = Some(handle);
 			drop(thread_guard);
-		},
-		Err(err) => { // We couldn't create a thread, we'll have to block this one
+		}
+		Err(err) => {
 			drop(thread_guard);
 
 			let mut queue_guard = QUEUE.lock();
-			queue_guard.push(Message::Error(format!(
+			queue_guard.insert(0, Message::error(format!(
 				"comfy_print::queue_then_check_thread(): Failed to create a thread to print the queue.\n\
 				Error: {err}.")));
 
 			drop(queue_guard);
-			print_until_empty();
 		}
 	}
 }
 
 fn print_until_empty() {
 	const MAX_RETRIES: u8 = 50;
-	
-	let mut message_pivot = String::new();
 	let mut retries = 0;
 	
 	loop {
@@ -65,17 +60,18 @@ fn print_until_empty() {
 		}
 		
 		let msg = queue_guard.remove(0);
-		message_pivot.clear();
-		message_pivot.push_str(msg.as_ref());
+		let msg_str: &str = msg.str();
 		let output_kind = msg.output_kind();
 		drop(queue_guard); // unlock the queue before blocking stdout/err
 		
-		if let Err(err) = try_write(&message_pivot, output_kind) {
+		let write_result = utils::try_write(&msg_str, output_kind);
+		
+		if let Err(err) = write_result {
 			let mut queue_guard = QUEUE.lock();
-			queue_guard.insert(0, Message::Error(
-				format!("comfy_print::write_until_empty(): Failed to print first message in queue.\n\
+			queue_guard.insert(0, Message::error(format!(
+				"comfy_print::write_until_empty(): Failed to print first message in queue.\n\
 				Error: {err}\n\
-				Message: {message_pivot}\n\
+				Message: {msg_str}\n\
 				Target output: {output_kind:?}")));
 			
 			queue_guard.insert(1, msg);
@@ -84,60 +80,44 @@ fn print_until_empty() {
 			retries += 1;
 			if retries >= MAX_RETRIES {
 				break;
-			} else {
-				thread::yield_now();
 			}
 		}
-	}
-}
 
-fn try_write(msg_str: &impl Display, output_kind: OutputKind) -> std::io::Result<()> {
-	match output_kind {
-		OutputKind::Stdout => {
-			let mut stdout = std::io::stdout().lock();
-			write!(stdout, "{}", msg_str)?;
-			stdout.flush()?;
-			Ok(())
-		}
-		OutputKind::Stderr => {
-			let mut stderr = std::io::stderr().lock();
-			write!(stderr, "{}", msg_str)?;
-			stderr.flush()?;
-			Ok(())
-		}
+		thread::yield_now();
 	}
 }
 
 /// On fail: Inserts error in front of the queue, original message on 2nd spot.
-fn blocking_write_first_in_line(msg: Message) {
-	let msg_str: &str = msg.as_ref();
+fn write_first_in_line(msg: Message) {
+	let msg_str: &str = msg.str();
 	
-	if let Err(err) = try_write(&msg_str, msg.output_kind()) {
+	if let Err(err) = utils::try_write(&msg_str, msg.output_kind()) {
 		let mut queue_guard = QUEUE.lock();
-		queue_guard.insert(0, Message::Error(
-			format!("comfy_print::blocking_write_first_in_line(): Failed to print first message in queue, it was pushed to the front again.\n\
+		queue_guard.insert(0, Message::error(format!(
+			"comfy_print::blocking_write_first_in_line(): Failed to print first message in queue, it was pushed to the front again.\n\
 			Error: {err}\n\
 			Message: {msg_str}")));
+		
 		queue_guard.insert(1, msg);
 	}
 }
 
 pub fn _print(input: String) {
-	_comfy_print_async(Message::Standard(input));
+	_comfy_print_async(Message::standard(input));
 }
 
 pub fn _println(mut input: String) {
 	input.push('\n');
-	_comfy_print_async(Message::Standard(input));
+	_comfy_print_async(Message::standard(input));
 }
 
 pub fn _eprint(input: String) {
-	_comfy_print_async(Message::Error(input));
+	_comfy_print_async(Message::error(input));
 }
 
 pub fn _eprintln(mut input: String) {
 	input.push('\n');
-	_comfy_print_async(Message::Error(input));
+	_comfy_print_async(Message::error(input));
 }
 
 #[macro_export]

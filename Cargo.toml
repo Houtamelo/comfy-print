@@ -1,6 +1,6 @@
 [package]
 name = "comfy-print"
-version = "0.1.1"
+version = "0.1.4"
 edition = "2021"
 license = "MIT"
 description = "Non-panicking versions of println! and friends"
@@ -19,3 +19,7 @@ parking_lot = "0.12.1"
 [features]
 default = []
 async_impl = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

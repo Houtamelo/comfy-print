@@ -1,10 +1,14 @@
-workspace = { members = ["comfy_print_tests"] }
 [package]
 name = "comfy-print"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "MIT"
+description = "Non-panicking versions of println! and friends"
+repository = "https://github.com/Houtamelo/comfy-print"
+readme = "README.md"
+keywords = ["println", "debug", "write", "io", "stream"]
+categories = ["os", "rust-patterns", "development-tools", "development-tools::debugging"]
+exclude = ["comfy_print_tests/*"]
 
 [dependencies]
 parking_lot = "0.12.1"

@@ -1,9 +1,9 @@
 [package]
 name = "comfy-print"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
-description = "Non-panicking versions of println! and friends"
+description = "Non-panicking versions of println! and friends. Async implementation."
 repository = "https://github.com/Houtamelo/comfy-print"
 readme = "README.md"
 keywords = ["println", "debug", "write", "io", "stream"]
@@ -16,10 +16,5 @@ exclude = [
 [dependencies]
 parking_lot = "0.12.1"
 
-[features]
-default = []
-async_impl = []
-
 [package.metadata.docs.rs]
-all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

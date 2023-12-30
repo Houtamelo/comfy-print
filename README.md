@@ -203,9 +203,9 @@ static QUEUE: FairMutex<Vec<Message>> = FairMutex::new(Vec::new());
 
 The queue is represented by a regular `Vec<Message>` wrapped in [parking_lot](https://crates.io/crates/parking_lot)'s `FairMutex`.
 
-A regular `Mutex`, upon being unlocked, will give the lock to the thread that is executed afterwards, regardless of which thread requested the lock first. This type of lock is problematic for our use case, we want to ensure that prints are done in the exact order they were requested. If there are multiple threads waiting for the lock, the regular `Mutex` won't care about which one asked first, which may result in prints being enqueued on the wrong order.
+A regular `Mutex`, upon being unlocked, will give the lock to the thread that is executed afterward, regardless of which thread requested the lock first. This type of lock is problematic for our use case, we want to ensure that prints are done in the exact order they were requested. If there are multiple threads waiting for the lock, the regular `Mutex` won't care about which one asked first, which may result in prints being enqueued on the wrong order.
 
-On the other hand, a `FairMutex` makes threads form a queue upon requesting the lock, ensuring that the thread that asked first gets it's turn first.
+On the other hand, a `FairMutex` makes threads form a queue upon requesting the lock, ensuring that the thread that asked first gets its turn first.
 
 ---
 
@@ -250,7 +250,7 @@ if queue_guard.len() == 0 {
 ```
 We don't have to wait for other threads, just try to print right away. This is what happens in most cases.
   
-Since we don't need the queue anymore, we immediately release it. Never owning two locks at the same time helps avoiding some deadlocking cases.
+Since we don't need the queue anymore, we immediately release it. Never owning two locks at the same time help avoiding some deadlocking cases.
 
 <details>
     <summary>fn write_first_in_line(msg: Message)</summary>
@@ -271,7 +271,7 @@ fn write_first_in_line(msg: Message) {
 }
 ```
 
-Here we try to write to the desired output. If that fails, we insert an error message in front of the queue, then the original message afterwards.
+Here we try to write to the desired output. If that fails, we insert an error message in front of the queue, then the original message afterward.
 
 Trying again is unlikely to yield any results, so we shouldn't do anything else.
 
@@ -487,7 +487,7 @@ if let Err(err) = write_result {
 thread::yield_now();
 ```
 
-If writing to output fails, we'll insert an error message in front of the queue, then the original message afterwards.
+If writing to output fails, we'll insert an error message in front of the queue, then the original message afterward.
 
 However, since we are guaranteed to not be in the main thread, we can hold the print responsibility for a bit longer, we'll keep trying to print up to `MAX_RETRIES`.
 
@@ -504,7 +504,7 @@ Regardless of the print result, at the end of each iteration we call `thread::yi
 
 A: To take care of my future self: by leaving it implicit, I'm counting on my future brain to read the code and figure out the exact order of guards being locked/unlocked.
 
-By explicitly writing `drop(guard)`, I'm making it clear where locks are released, thus my future brain will have less opportunities to make mistakes.
+By explicitly writing `drop(guard)`, I'm making it clear where locks are released, thus my future brain will have fewer opportunities to make mistakes.
 
 This also makes it clear for other programmers reading the code, they will have an easier time understanding my intentions.
 

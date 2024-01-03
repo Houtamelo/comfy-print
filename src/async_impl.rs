@@ -1,155 +1,328 @@
-use super::utils::Message;
-use super::utils;
+use std::io::Write;
 use std::thread;
-use std::thread::JoinHandle;
-use parking_lot::FairMutex;
+use parking_lot::{FairMutex, RawFairMutex};
+use parking_lot::lock_api::MutexGuard;
+use config::on_queue_full::On_QueueFull;
+use crate::message::{Message, OutputKind};
+use crate::printing_state::PrintingState;
+use crate::config;
+use crate::config::on_max_retries_reached::On_MaxRetriesReached;
+use crate::config::on_queue_printing_fail::On_QueuePrintingFail;
 
-static QUEUE: FairMutex<Vec<Message>> = FairMutex::new(Vec::new());
-static ACTIVE_THREAD: FairMutex<Option<JoinHandle<()>>> = FairMutex::new(None);
+/// This is public within crate to allow testing.
+pub(crate) static QUEUE: FairMutex<Vec<Message>> = FairMutex::new(Vec::new());
 
-pub fn _comfy_print_async(msg: Message) {
+pub(crate) static STATE: FairMutex<PrintingState> = FairMutex::new(PrintingState::Idle);
+
+/// Main function for printing user messages.
+/// 
+/// # Arguments 
+/// 
+/// * `msg`: [Message] to be printed.
+/// 
+/// # Examples 
+/// 
+/// ```
+/// use comfy_print::message::Message;
+/// 
+/// let msg = Message::standard("Hello, world!");
+/// // Prints "Hello, world!" to stdout.
+/// comfy_print::async_impl::comfy_print_async(msg);
+///
+/// let msg = Message::error("Hello, bug!");
+/// // Prints "Hello, bug!" to stderr.
+/// comfy_print::async_impl::comfy_print_async(msg);
+///
+/// let msg = Message::standard_ln("Hello, world!");
+/// // Prints "Hello, world!\n" to stdout.
+/// comfy_print::async_impl::comfy_print_async(msg);
+///
+/// let msg = Message::error_ln("Hello, bug!");
+/// // Prints "Hello, bug!\n" to stderr.
+/// comfy_print::async_impl::comfy_print_async(msg);
+/// 
+/// ```
+#[allow(unused_must_use)]
+pub fn comfy_print_async(msg: Message) {
 	let mut queue_guard = QUEUE.lock();
+	let queue_len = queue_guard.len();
 	
-	if queue_guard.len() == 0 {
+	if queue_len == 0 {
 		drop(queue_guard);
-		write_first_in_line(msg);
-	} else {
-		queue_guard.push(msg);
+		
+		try_write(&msg).inspect_err(
+			|err| {
+				if config::max_queue_length::get() == 0 {
+					return;
+				}
+
+				let mut queue_guard = QUEUE.lock();
+				queue_guard.insert(0, msg);
+				owned_try_insert_write_err(&mut queue_guard, err, "comfy_print::async_impl::comfy_print_async(): Failed to print message, creating queue...");
+				drop(queue_guard);
+				
+				check_state();
+			});
+	} 
+	else {
+		if queue_len < config::max_queue_length::get(){
+			queue_guard.push(msg);
+		} else if On_QueueFull::KeepNewest == config::on_queue_full::get() {
+			queue_guard.remove(0);
+			queue_guard.push(msg);
+		}
+		
 		drop(queue_guard);
-		check_thread();
+		
+		check_state();
+	}
+
+	return;
+	
+	/// WARNING: May lock [STATE], then may lock [QUEUE].
+	fn check_state() {
+		let Some(mut state_guard) = STATE.try_lock()
+				else { return; };
+
+		if state_guard.is_busy() { // We already pushed our msg to the queue and there's already someone else printing it, so we can return.
+			drop(state_guard);
+			return;
+		}
+
+		let thread_result = thread::Builder::new().spawn(start_printing_queue);
+
+		match thread_result {
+			Ok(handle) => {
+				*state_guard = PrintingState::Threaded(handle);
+				drop(state_guard);
+			}
+			Err(err) => {
+				*state_guard = PrintingState::Synchronous;
+				drop(state_guard);
+
+				try_insert_write_err(&err, "`comfy_print::async_impl::check_state()`: Failed to create a thread to print the queue.");
+
+				start_printing_queue();
+
+				let mut state_guard = STATE.lock();
+				*state_guard = PrintingState::Idle;
+				drop(state_guard);
+			}
+		}
 	}
 }
 
-fn check_thread() {
-	let Some(mut thread_guard) = ACTIVE_THREAD.try_lock()
-			else { return; };
+fn start_printing_queue() {
+	print_until_empty(config::max_retries::get(), 0);
+}
 
-	let is_printing = thread_guard.as_ref().is_some_and(|handle| !handle.is_finished());
-	if is_printing { // We already pushed our msg to the queue and there's already a thread printing it, so we can return.
+/// WARNING: Will lock [QUEUE], then may lock [std::io::stdout] and/or [std::io::stderr].
+fn print_until_empty(max_retries: usize, retries: usize) {
+	let mut queue_guard = QUEUE.lock();
+	
+	if queue_guard.is_empty() {
+		queue_guard.shrink_to_fit();
+		drop(queue_guard);
+		return;
+	}
+	
+	let msg = queue_guard.remove(0);
+	drop(queue_guard); // unlock the queue before blocking stdout/err
+	
+	match try_write(&msg) {
+		Ok(_) => {
+			print_until_empty(max_retries, retries);
+		},
+		Err(err) => match config::on_queue_printing_fail::get() {
+			On_QueuePrintingFail::TryUntilMaxRetries => {
+				reinsert_message(msg, err);
+
+				if retries < max_retries {
+					print_until_empty(max_retries, retries + 1);
+				} else {
+					on_max_retries();
+				}
+			}
+			On_QueuePrintingFail::Return => {
+				reinsert_message(msg, err);
+				return;
+			}
+		}
+	}
+	
+	return;
+
+	/// WARNING: Will lock [QUEUE].
+	fn reinsert_message(msg: Message, err: std::io::Error) {
+		let mut queue_guard = QUEUE.lock();
+
+		// This can happen if another thread pushed a message to the queue while we were printing the current one.
+		if queue_guard.len() < config::max_queue_length::get() {
+			queue_guard.insert(0, msg);
+		} else if let On_QueueFull::KeepOldest = config::on_queue_full::get() {
+			queue_guard.pop();
+			queue_guard.insert(0, msg);
+		}
+
+		owned_try_insert_write_err(&mut queue_guard, &err, "`comfy_print::async_impl::print_until_empty()`: Failed to print first message in queue.");
+		drop(queue_guard);
+	}
+
+	/// WARNING: May lock [QUEUE].
+	fn on_max_retries() {
+		match config::on_max_retries_reached::get() {
+			On_MaxRetriesReached::Return => {
+				return;
+			},
+			On_MaxRetriesReached::WriteToDisk => {
+				let Ok(mut file) = config::log_io_path::get_file()
+						else { return; };
+
+				let mut queue_guard = QUEUE.lock();
+
+				while !queue_guard.is_empty() {
+					let msg = &queue_guard[0];
+					let write_result = write!(file, "{}", msg);
+
+					match write_result {
+						Ok(_) => {
+							queue_guard.remove(0);
+							continue;
+						},
+						Err(err) => {
+							owned_try_insert_write_err(&mut queue_guard, &err, "`comfy_print::async_impl::on_max_retries_reached()`: Failed to write to log file.");
+							break;
+						}
+					}
+				}
+
+				queue_guard.shrink_to_fit();
+				drop(queue_guard);
+				drop(file);
+			}
+		}
+	}
+}
+
+#[cfg(not(test))]
+/// WARNING: Will lock one of [std::io::stdout] | [std::io::stderr]
+fn try_write(msg: &Message) -> std::io::Result<()> { 
+	match msg.output_kind() {
+		OutputKind::Stdout => {
+			let mut stdout = std::io::stdout().lock();
+			write!(stdout, "{}", msg)?;
+			stdout.flush()?;
+			Ok(())
+		}
+		OutputKind::Stderr => {
+			let mut stderr = std::io::stderr().lock();
+			write!(stderr, "{}", msg)?;
+			stderr.flush()?;
+			Ok(())
+		}
+	}
+}
+
+#[cfg(test)]
+/// WARNING: Will lock one of [std::io::stdout] | [std::io::stderr]
+fn try_write(msg: &Message) -> std::io::Result<()> {
+	use std::sync::atomic::Ordering;
+	
+	if tests::TOGGLE_WRITE_FAIL.load(Ordering::Relaxed) == true {
+		return Err(std::io::Error::new(std::io::ErrorKind::Other, tests::FORCE_WRITE_FAIL_MSG));
+	}
+	
+	let force_write_fail_result = tests::FORCE_WRITE_FAIL
+			.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed);
+
+	if let Ok(_) = force_write_fail_result {
+		return Err(std::io::Error::new(std::io::ErrorKind::Other, tests::FORCE_WRITE_FAIL_MSG));
+	}
+
+	match msg.output_kind() {
+		OutputKind::Stdout => {
+			let mut stdout = std::io::stdout().lock();
+			write!(stdout, "{}", msg)?;
+			stdout.flush()?;
+			Ok(())
+		}
+		OutputKind::Stderr => {
+			let mut stderr = std::io::stderr().lock();
+			write!(stderr, "{}", msg)?;
+			stderr.flush()?;
+			Ok(())
+		}
+	}
+}
+
+/// WARNING: Will lock [QUEUE]
+#[inline(always)]
+fn try_insert_write_err(err: &std::io::Error, call_description: &'static str) {
+	if config::allow_logging_print_failures::get() == false {
+		return;
+	}
+	
+	let max_length = config::max_queue_length::get();
+	let mut queue_guard: MutexGuard<RawFairMutex, Vec<Message>> = QUEUE.lock();
+	if queue_guard.len() < max_length {
+		queue_guard.insert(0, Message::error_ln(format!("{call_description}\nError: {err}.")));
+	}
+	
+	drop(queue_guard);
+}
+
+/// WARNING: does not lock anything since this receives a mutable reference to a queue.
+#[inline(always)]
+fn owned_try_insert_write_err(queue_guard: &mut MutexGuard<RawFairMutex, Vec<Message>>, err: &std::io::Error, call_description: &'static str) {
+	if config::allow_logging_print_failures::get() == false {
 		return;
 	}
 
-	match thread::Builder::new().spawn(print_until_empty) {
-		Ok(handle) => {
-			*thread_guard = Some(handle);
-			drop(thread_guard);
-		}
-		Err(err) => {
-			drop(thread_guard);
-
-			let mut queue_guard = QUEUE.lock();
-			queue_guard.insert(0, Message::error(format!(
-				"comfy_print::queue_then_check_thread(): Failed to create a thread to print the queue.\n\
-				Error: {err}.")));
-
-			drop(queue_guard);
-		}
+	let max_length = config::max_queue_length::get();
+	if queue_guard.len() < max_length {
+		queue_guard.insert(0, Message::error_ln(format!("{call_description}\nError: {err}.")));
 	}
 }
 
-fn print_until_empty() {
-	const MAX_RETRIES: u8 = 50;
-	let mut retries = 0;
+#[cfg(test)]
+pub(crate) mod tests {
+	pub(crate) static FORCE_WRITE_FAIL: AtomicBool = AtomicBool::new(false);
+	pub(crate) static TOGGLE_WRITE_FAIL: AtomicBool = AtomicBool::new(false);
+	pub const FORCE_WRITE_FAIL_MSG: &str = "Forced write failure";
+
+	use std::sync::atomic::AtomicBool;
+	use crate::comfy_println;
+	use super::*;
+	use crate::test_utils;
 	
-	loop {
-		let mut queue_guard = QUEUE.lock();
-
-		if queue_guard.len() <= 0 {
-			drop(queue_guard);
-			break;
-		}
-		
-		let msg = queue_guard.remove(0);
-		let msg_str: &str = msg.str();
-		let output_kind = msg.output_kind();
-		drop(queue_guard); // unlock the queue before blocking stdout/err
-		
-		let write_result = utils::try_write(&msg_str, output_kind);
-		
-		if let Err(err) = write_result {
-			let mut queue_guard = QUEUE.lock();
-			queue_guard.insert(0, Message::error(format!(
-				"comfy_print::write_until_empty(): Failed to print first message in queue.\n\
-				Error: {err}\n\
-				Message: {msg_str}\n\
-				Target output: {output_kind:?}")));
-			
-			queue_guard.insert(1, msg);
-			drop(queue_guard);
-			
-			retries += 1;
-			if retries >= MAX_RETRIES {
-				break;
-			}
-		}
-
-		thread::yield_now();
+	#[test]
+	fn test_when_queue_is_empty() {
+		comfy_println!("Test message");
+		assert_eq!(test_utils::get_queue().len(), 0);
 	}
-}
 
-/// On fail: Inserts error in front of the queue, original message on 2nd spot.
-fn write_first_in_line(msg: Message) {
-	let msg_str: &str = msg.str();
-	
-	if let Err(err) = utils::try_write(&msg_str, msg.output_kind()) {
-		let mut queue_guard = QUEUE.lock();
-		queue_guard.insert(0, Message::error(format!(
-			"comfy_print::blocking_write_first_in_line(): Failed to print first message in queue, it was pushed to the front again.\n\
-			Error: {err}\n\
-			Message: {msg_str}")));
+	#[test]
+	fn test_when_queue_is_not_empty() {
+		// Just so the error messages don't interfere with the test.
+		config::allow_logging_print_failures::set(false);
 		
-		queue_guard.insert(1, msg);
+		test_utils::set_toggle_write_fail(true);
+		comfy_println!("Test message_1");
+		comfy_println!("Test message_2");
+		comfy_println!("Test message_3");
+		
+		assert_eq!(STATE.lock().is_busy(), true);
+		
+		test_utils::yield_until_idle();
+		assert_eq!(STATE.lock().is_busy(), false);
+		assert_eq!(test_utils::get_queue().len(), 3);
+
+		test_utils::set_toggle_write_fail(false);
+		comfy_println!("Test message_4");
+		assert_eq!(STATE.lock().is_busy(), true);
+		
+		test_utils::yield_until_idle();
+		assert_eq!(STATE.lock().is_busy(), false);
+		assert_eq!(test_utils::get_queue().len(), 0);
 	}
-}
-
-pub fn _print(input: String) {
-	_comfy_print_async(Message::standard(input));
-}
-
-pub fn _println(mut input: String) {
-	input.push('\n');
-	_comfy_print_async(Message::standard(input));
-}
-
-pub fn _eprint(input: String) {
-	_comfy_print_async(Message::error(input));
-}
-
-pub fn _eprintln(mut input: String) {
-	input.push('\n');
-	_comfy_print_async(Message::error(input));
-}
-
-#[macro_export]
-macro_rules! comfy_print {
-    ($($arg:tt)*) => {{
-        $crate::async_impl::_print(std::format!($($arg)*));
-    }};
-}
-
-#[macro_export]
-macro_rules! comfy_println {
-    () => {
-        $crate::async_impl::_println("\n")
-    };
-    ($($arg:tt)*) => {{
-        $crate::async_impl::_println(std::format!($($arg)*));
-    }};
-}
-
-#[macro_export]
-macro_rules! comfy_eprint {
-	($($arg:tt)*) => {{
-		$crate::async_impl::_eprint(std::format!($($arg)*));
-	}};
-}
-
-#[macro_export]
-macro_rules! comfy_eprintln {
-	() => {
-		$crate::async_impl::_eprintln("\n")
-	};
-	($($arg:tt)*) => {{
-		$crate::async_impl::_eprintln(std::format!($($arg)*));
-	}};
 }

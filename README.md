@@ -33,6 +33,8 @@ Here's the patterns that I use (with Jetbrains Intellij IDEs, Java's Regex):
 
 ## Step 3 - Get comfortable
 
+## Step 4 - Actually, you can also configure the behavior of this crate through global variables, check the config module for more info.
+
 ---
 
 # Pros
